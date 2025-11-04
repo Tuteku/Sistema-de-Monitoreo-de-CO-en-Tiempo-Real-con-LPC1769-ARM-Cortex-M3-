@@ -1,0 +1,37 @@
+19:39:57 **** Incremental Build of configuration Debug for project CMSISv2p00_LPC17xx ****
+make -r -j8 all 
+make[1]: Nothing to be done for 'main-build'.
+Performing post-build steps
+arm-none-eabi-size libCMSISv2p00_LPC17xx.a ; # arm-none-eabi-objdump -h -S libCMSISv2p00_LPC17xx.a >libCMSISv2p00_LPC17xx.lss
+   text	   data	    bss	    dec	    hex	filename
+      0	      0	      0	      0	      0	core_cm3.o (ex libCMSISv2p00_LPC17xx.a)
+    400	      4	      0	    404	    194	system_LPC17xx.o (ex libCMSISv2p00_LPC17xx.a)
+    910	      0	     40	    950	    3b6	debug_frmwrk.o (ex libCMSISv2p00_LPC17xx.a)
+    718	      0	      0	    718	    2ce	lpc17xx_adc.o (ex libCMSISv2p00_LPC17xx.a)
+   5602	      0	     11	   5613	   15ed	lpc17xx_can.o (ex libCMSISv2p00_LPC17xx.a)
+    299	      0	      0	    299	    12b	lpc17xx_clkpwr.o (ex libCMSISv2p00_LPC17xx.a)
+    250	      0	      0	    250	     fa	lpc17xx_dac.o (ex libCMSISv2p00_LPC17xx.a)
+   1295	      0	  10852	  12147	   2f73	lpc17xx_emac.o (ex libCMSISv2p00_LPC17xx.a)
+    182	      0	      0	    182	     b6	lpc17xx_exti.o (ex libCMSISv2p00_LPC17xx.a)
+    892	     32	      0	    924	    39c	lpc17xx_gpdma.o (ex libCMSISv2p00_LPC17xx.a)
+    572	      0	      0	    572	    23c	lpc17xx_gpio.o (ex libCMSISv2p00_LPC17xx.a)
+   2320	      0	     52	   2372	    944	lpc17xx_i2c.o (ex libCMSISv2p00_LPC17xx.a)
+   1680	      0	      0	   1680	    690	lpc17xx_i2s.o (ex libCMSISv2p00_LPC17xx.a)
+      2	      0	      0	      2	      2	lpc17xx_libcfg_default.o (ex libCMSISv2p00_LPC17xx.a)
+    670	      0	      0	    670	    29e	lpc17xx_mcpwm.o (ex libCMSISv2p00_LPC17xx.a)
+    116	      0	      0	    116	     74	lpc17xx_nvic.o (ex libCMSISv2p00_LPC17xx.a)
+    180	      0	      0	    180	     b4	lpc17xx_pinsel.o (ex libCMSISv2p00_LPC17xx.a)
+   1426	      0	      0	   1426	    592	lpc17xx_pwm.o (ex libCMSISv2p00_LPC17xx.a)
+   1278	      0	      0	   1278	    4fe	lpc17xx_qei.o (ex libCMSISv2p00_LPC17xx.a)
+    346	      0	      0	    346	    15a	lpc17xx_rit.o (ex libCMSISv2p00_LPC17xx.a)
+   2238	      0	      0	   2238	    8be	lpc17xx_rtc.o (ex libCMSISv2p00_LPC17xx.a)
+    820	      0	      0	    820	    334	lpc17xx_spi.o (ex libCMSISv2p00_LPC17xx.a)
+   1490	      0	      0	   1490	    5d2	lpc17xx_ssp.o (ex libCMSISv2p00_LPC17xx.a)
+    264	      0	      0	    264	    108	lpc17xx_systick.o (ex libCMSISv2p00_LPC17xx.a)
+   1420	      0	      0	   1420	    58c	lpc17xx_timer.o (ex libCMSISv2p00_LPC17xx.a)
+   2948	      0	      0	   2948	    b84	lpc17xx_uart.o (ex libCMSISv2p00_LPC17xx.a)
+    314	      0	      0	    314	    13a	lpc17xx_wdt.o (ex libCMSISv2p00_LPC17xx.a)
+ 
+
+19:39:58 Build Finished. 0 errors, 0 warnings. (took 485ms)
+

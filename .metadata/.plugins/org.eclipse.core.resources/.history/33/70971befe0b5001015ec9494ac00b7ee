@@ -1,0 +1,55 @@
+/*
+Togglea el led rojo integrado cada 1 segundo usando el Timer0 del LPC1769.
+*/
+
+#include "LPC17xx.h"
+#include "lpc17xx_pinsel.h"
+#include "lpc17xx_timer.h"
+#include "lpc17xx_gpio.h"
+
+void cfgPCB(){
+    PINSEL_CFG_Type pin = {0};
+    pin.Portnum = 0;
+    pin.Pinnum = 22;
+    pin.Funcnum = 0;
+    pin.Pinmode = PINSEL_PINMODE_TRISTATE;
+    pin.OpenDrain = PINSEL_PINMODE_NORMAL;
+    GPIO_SetDir(0, 22, 1);
+    PINSEL_ConfigPin(&pin);
+}
+
+void cfgTimer(){
+	TIM_TIMERCFG_Type timer = {0};
+	timer.PrescaleOption = TIM_PRESCALE_USVAL;
+	timer.PrescaleValue = 1000;
+
+	TIM_MATCHCFG_Type matcher = {0};
+	matcher.MatchChannel = 0;
+	matcher.IntOnMatch = ENABLE;
+	matcher.ResetOnMatch = ENABLE;
+	matcher.StopOnMatch = DISABLE;
+	matcher.ExtMatchOutputType = TIM_EXTMATCH_NOTHING;
+	matcher.MatchValue = 1000;
+
+	TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &timer);
+	TIM_ConfigMatch(LPC_TIM0, &matcher);
+	TIM_Cmd(LPC_TIM0, ENABLE);
+	NVIC_EnableIRQ(TIMER0_IRQn);
+}
+
+int main(){
+	SystemInit();
+	cfgPCB();
+	cfgTimer();
+	while(1);
+}
+
+void TIMER0_IRQHandler(){
+	if(TIM_GetIntStatus(LPC_TIM0, TIM_MR0_INT)==SET){
+		LPC_GPIO0->FIOPIN ^= (1<<22);
+		LPC_GPIO3->FIOSET |= (1<<25);
+		LPC_GPIO3->FIOSET |= (1<<26);
+		TIM_ClearIntPending(LPC_TIM0, TIM_MR0_INT);
+	}
+	NVIC_ClearPendingIRQ(TIMER0_IRQn);
+}
