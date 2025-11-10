@@ -2,33 +2,33 @@
 #include <ESP8266WebServer.h>
 
 // 1. Configuración de WiFi
-const char* ssid = "2.4Personal-4839D";       // <<--- CAMBIA ESTO
-const char* password = "mati200200";  // <<--- CAMBIA ESTO
+const char* ssid = "2.4Personal-4839D"; 
+const char* password = "mati200200";
 
 // 2. Configuración Serial y Servidor
 #define BAUDRATE 9600
+// --- CONTROL DE REFRESH AQUÍ (en milisegundos) ---
+#define REFRESH_INTERVAL_MS 500 
+// -------------------------------------------------
 ESP8266WebServer server(80);
 
 // 3. Variables de Almacenamiento de Datos
 const int DATA_SIZE = 10;
-// Array para almacenar las últimas 10 mediciones de CO
+// Array para almacenar las últimas 10 mediciones. Usamos float.
 float co_values[DATA_SIZE] = {0.0}; 
 int co_index = 0; // Índice para saber dónde insertar el próximo valor
 
 // --- DECLARACIÓN DE FUNCIONES ---
 void handleRoot();
+void handleData(); // Nueva función para servir solo el JSON
 void handleSerial();
 String getCoDataJson();
 
 // --- SETUP ---
 void setup() {
-  // WiFi.disconnect(true);
-  // WiFi.mode(WIFI_OFF);
-  // Serial.begin(BAUDRATE);
-  // Serial.println("Credenciales borradas. Flasheando el codigo principal");
-  Serial.begin(BAUDRATE); // Inicia Serial
+  Serial.begin(BAUDRATE); // Inicia Serial con el LPC1769 a 9600 baudios
   WiFi.mode(WIFI_STA); 
-  // 1. Conexión a la red WiFi
+  
   WiFi.begin(ssid, password);
   Serial.print("Conectando a WiFi");
 
@@ -41,124 +41,181 @@ void setup() {
   Serial.print("Dirección IP: ");
   Serial.println(WiFi.localIP()); 
 
-  // 2. Definición del Handler para la página principal
-  server.on("/", handleRoot); 
 
-  // 3. Iniciar el servidor
+  server.on("/", handleRoot); 
+  server.on("/data", handleData); // NUEVA RUTA: Sirve el JSON de datos para el AJAX
+
   server.begin();
   Serial.println("Servidor HTTP iniciado");
 }
 
 // --- LOOP PRINCIPAL ---
 void loop() {
-  // 1. Manejar las peticiones HTTP pendientes (OBLIGATORIO para el servidor)
   server.handleClient(); 
-  
-  // 2. Manejar la lectura serial desde el LPC1769
+
   handleSerial();
 }
 
 // --- FUNCIONES DE LECTURA SERIAL ---
 
-/**
- * Función que gestiona la lectura de datos desde el puerto Serial (UART del LPC1769).
- * Asume que el LPC1769 envía un valor float seguido de un salto de línea (\n).
- */
 void handleSerial() {
-  // Revisa si hay datos disponibles en el puerto Serial
-  if (Serial.available() > 0) {
-    
-    // Lee la cadena hasta que encuentra un salto de línea (delimitador)
+
+  if (Serial.available() > 0) {  
     String dataString = Serial.readStringUntil('\n');
     dataString.trim(); // Elimina espacios en blanco y caracteres de control
 
-    // Verifica que la cadena no esté vacía
     if (dataString.length() > 0) {
-      
-      // Convierte la cadena a un valor de punto flotante (float)
+
       float newValue = dataString.toFloat();
-      
-      // Muestra el valor recibido para depuración
-      Serial.print("CO Value Received: ");
+
+      Serial.print("Value Received: ");
       Serial.println(newValue, 2); 
 
-      // Almacenamiento: Inserta el nuevo valor en el array circularmente
       co_values[co_index] = newValue;
-      co_index = (co_index + 1) % DATA_SIZE; // Asegura que el índice vuelva a 0 después de DATA_SIZE
+      co_index = (co_index + 1) % DATA_SIZE; 
     }
   }
 }
 
 // --- FUNCIONES DEL SERVIDOR WEB ---
 
-// Construye la cadena JSON del array de datos para inyectarla en JavaScript
+// Construye la cadena JSON del array de datos
 String getCoDataJson() {
   String json = "[";
   for (int i = 0; i < DATA_SIZE; i++) {
-    // Agrega el valor con dos decimales
-    json += String(co_values[i], 2); 
+    json += String(co_values[i], 2); // Agrega el valor con dos decimales
     if (i < DATA_SIZE - 1) {
-      json += ","; // Agrega coma si no es el último elemento
+      json += ","; 
     }
   }
   json += "]";
   return json;
 }
 
-// Genera la página HTML con el gráfico
+// Sirve el array de datos completo como JSON para AJAX
+void handleData() {
+  server.send(200, "application/json", getCoDataJson());
+}
+
+
+// Genera la página HTML principal con el gráfico y el script de actualización AJAX
 void handleRoot() {
-  String coData = getCoDataJson();
+  String html = F(R"=====(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Monitor CO</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 20px; background-color: #f4f7f6; }
+    h1 { color: #333; }
+    #coChart { border: 1px solid #ddd; background-color: #fff; margin: 20px auto; max-width: 90%; }
+    p { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Monitor de Niveles de CO (en ppm) (LPC1769)</h1>
+  <p>Ultimos <span id="data_size_display">)=====");
+  html += String(DATA_SIZE); // Inyecta DATA_SIZE
+  html += F(R"=====(</span> valores. Actualizacion cada )=====");
+  html += String((float)REFRESH_INTERVAL_MS / 1000.0f, 2); // Inyecta el tiempo de refresco en segundos
+  html += F(R"=====(s.</p>
+  <canvas id='coChart' width='300' height='200'></canvas>
 
-  // El código HTML es el mismo que en la respuesta anterior
-  String html = "<!DOCTYPE html><html><head><title>Monitor CO</title>";
-  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'></head><body>";
-  
-  html += "<h1>Monitor de Niveles de CO</h1>";
-  html += "<p>Ultimos " + String(DATA_SIZE) + " valores recopilados. (Actualiza la pagina para ver nuevos datos)</p>";
+  <script>
+    // Constantes inyectadas desde C++
+    const DATA_SIZE = )=====");
+  html += String(DATA_SIZE); 
+  html += F(R"=====(;
+    const REFRESH_INTERVAL_MS = )=====");
+  html += String(REFRESH_INTERVAL_MS); // Inyección clave del tiempo de refresco
+  html += F(R"=====(;
 
-  // Contenedor del Gráfico (Canvas)
-  html += "<canvas id='coChart' width='300' height='200'></canvas>";
+    let co_data = []; // El array comienza vacío y se llena con AJAX
 
-  // --- Bloque JavaScript para dibujar el gráfico ---
-  html += "<script>";
-  
-  // 1. Inyectar los datos del array C++ directamente en JS
-  html += "var co_data = " + coData + ";"; 
+    const ctx = document.getElementById('coChart').getContext('2d');
+    const w = 300; 
+    const h = 200; 
+    const padding = 20;
 
-  // 2. Código de visualización (Usando Canvas nativo para ligereza)
-  html += "var ctx = document.getElementById('coChart').getContext('2d');";
-  html += "var w = 300; var h = 200; var padding = 20;";
-  
-  // Calcula valores min/max del array
-  html += "var maxVal = Math.max(...co_data);";
-  html += "if (maxVal === -Infinity || maxVal === 0) maxVal = 10;"; // Default
-  html += "maxVal *= 1.1;"; // Deja un margen superior
-  
-  html += "ctx.clearRect(0, 0, w, h);"; // Limpiar el canvas
-  html += "ctx.beginPath();";
-  html += "ctx.strokeStyle = '#FF5733';";
-  html += "ctx.lineWidth = 2;";
+    // --- FUNCIONES DE GRÁFICO ---
 
-  // Dibuja el eje Y (opcional)
-  html += "ctx.moveTo(padding, padding); ctx.lineTo(padding, h - padding); ctx.stroke();";
-  
-  // Mapeo del primer punto
-  html += "var x = padding; var y = h - padding - (co_data[0] / maxVal) * (h - 2 * padding);";
-  html += "ctx.moveTo(x, y);";
-  
-  // Mapeo y dibujo de los puntos restantes
-  html += "for(var i = 1; i < co_data.length; i++){";
-  html += "  x = padding + (i / (co_data.length - 1)) * (w - 2 * padding);";
-  html += "  y = h - padding - (co_data[i] / maxVal) * (h - 2 * padding);";
-  html += "  ctx.lineTo(x, y);";
-  html += "}";
-  html += "ctx.stroke();";
-  
-  html += "</script>";
-  // --------------------------------------------------------
-  
-  html += "</body></html>";
+    function drawChart() {
+        if (co_data.length === 0) return; // No dibujar si no hay datos
 
-  // Enviar la respuesta HTTP al cliente
+        // Calcula el valor máximo para la escala Y (máximo 3300 mV, pero es dinámico)
+        let maxVal = Math.max(...co_data);
+        if (maxVal === -Infinity || maxVal < 10) maxVal = 500; 
+        else maxVal *= 1.1; 
+
+        ctx.clearRect(0, 0, w, h); // Limpiar el canvas
+
+        // Dibujar ejes (simplificado)
+        ctx.strokeStyle = '#999';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padding, h - padding);
+        ctx.lineTo(w - padding, h - padding); // Eje X
+        ctx.moveTo(padding, padding);
+        ctx.lineTo(padding, h - padding); // Eje Y
+        ctx.stroke();
+
+        // Dibujar la línea de datos
+        ctx.beginPath();
+        ctx.strokeStyle = '#007BFF'; // Azul
+        ctx.lineWidth = 2;
+
+        for(let i = 0; i < co_data.length; i++){
+            let x = padding + (i / (DATA_SIZE - 1)) * (w - 2 * padding);
+            let value = co_data[i] || 0; 
+            let normalizedY = (value / maxVal) * (h - 2 * padding);
+            let y = h - padding - normalizedY;
+
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+    }
+
+
+    // --- FUNCIÓN DE ACTUALIZACIÓN AJAX (CLAVE) ---
+
+    function updateData() {
+        const xhr = new XMLHttpRequest();
+        // Petición a la nueva ruta /data
+        xhr.open('GET', '/data', true); 
+        xhr.setRequestHeader('Content-Type', 'application/json');
+
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    // El nuevo JSON reemplaza el array de datos
+                    co_data = JSON.parse(xhr.responseText);
+                    drawChart(); // Redibuja el gráfico con los nuevos datos
+                } catch (e) {
+                    console.error("Error al parsear JSON:", e);
+                }
+            }
+        };
+        xhr.onerror = function() {
+            console.error("Error al conectar con el servidor.");
+        };
+        xhr.send();
+    }
+
+    // Configurar la actualización dinámica usando la constante inyectada
+    setInterval(updateData, REFRESH_INTERVAL_MS); 
+
+    // Intentar una carga inicial
+    updateData();
+  </script>
+
+</body>
+</html>
+)=====");
+
   server.send(200, "text/html", html);
 }
