@@ -8,7 +8,9 @@ Togglea el led rojo integrado cada 1 segundo usando el Timer0 del LPC1769.
 #include "lpc17xx_gpio.h"
 #include "lpc17xx_uart.h"
 #include "lpc17xx_adc.h"
+#include "lpc17xx_gpdma.h"
 #include <stdio.h>
+#include <math.h>
 
 #define LED_ROJO 		(1<<2)
 #define LED_VERDE 		(1<<27)
@@ -16,12 +18,18 @@ Togglea el led rojo integrado cada 1 segundo usando el Timer0 del LPC1769.
 #define BUZZER 			(1<<22)
 #define ADC_FREQ 		20000
 
-#define UMBRAL_PRECAUCION_MV    1500   // Ajustar segun calibracion
-#define UMBRAL_CRITICO_MV 		2200 // Ajustar segun calibracion
+#define UMBRAL_PRECAUCION_PPM    5   	// Ajustar segun calibracion
+#define UMBRAL_CRITICO_PPM 		5000 	// Ajustar segun calibracion
+#define R0_SENSOR				86.19  	// Resistencia en kOhm del sensor a 100ppm de CO en aire limpio
+#define RL_SENSOR				1 		// Resistencia de carga en kOhm del sensor
 
-volatile uint16_t adc_value_mv = 0;
+#define NUM_SAMPLES_ADC			10
+
+float curva_CO[3] = {50.0, -0.97, -0.0194};
+volatile uint16_t adc_value_ppm = 0;
 volatile uint8_t flag_buzzer_toggle = 0;
-volatile uint8_t prueba = 0;
+volatile uint16_t *adc_samples;
+volatile uint16_t samples_average_ppm = 0;
 
 
 void cfgPin(uint8_t port_num, uint8_t pin_num, uint8_t func_num);
@@ -29,9 +37,13 @@ void pinConfiguration(void);
 void cfgTimer(void);
 void cfgADC(void);
 void cfgUART(void);
+void cfgDMA(void);
+void calcAverage(void);
+uint16_t convertirPPM(uint16_t raw_data);
 
-void UART_SendString(char *str); //Funcion para mandar string por UART
-void UART_SendNumber(uint16_t num); //Funcion para mandar las mediciones del sensor
+
+void UART_SendString(char *str); 				//Funcion para mandar string por UART
+void UART_SendNumber(uint16_t num); 			//Funcion para mandar las mediciones del sensor
 void intToStr(uint16_t num, uint8_t buffer[]);
 
 int main(){
@@ -47,11 +59,20 @@ int main(){
     }
 
 	cfgUART();
+	cfgDMA();
     cfgADC();
     cfgTimer();
 
 	while(1){
-		// Bucle principal vacio, las tareas se manejan por interrupcion.
+//		calcAverage();
+		if(samples_average_ppm >= UMBRAL_PRECAUCION_PPM){
+			for(uint8_t i = 0; i < 3; i++){
+				LPC_GPIO0 -> FIOSET |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
+				for(uint32_t j = 0; j < 1000000; j++); // Delay
+				LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
+				for(uint32_t j = 0; j < 1000000; j++); // Delay
+			}
+		}
 	};
 
     return 0;
@@ -122,9 +143,6 @@ void cfgTimer(void){
 
 	TIM_Init(LPC_TIM1, TIM_TIMER_MODE, &timerMode1);
 	TIM_ConfigMatch(LPC_TIM1, &timerMAT10);
-//	TIM_Init(LPC_TIM1, TIM_TIMER_MODE, &timerMode1);
-//	TIM_ConfigMatch(LPC_TIM1, &timerMAT10);
-//	TIM_Cmd(LPC_TIM1, ENABLE);
 }
 
 void cfgADC(void){
@@ -150,6 +168,51 @@ void cfgUART(void){
 	UART_TxCmd(LPC_UART2, ENABLE);
 }
 
+void cfgDMA(void){
+	GPDMA_Channel_CFG_Type  cfgADC_DMA_CH0;
+	GPDMA_LLI_Type			cfgADC_LLI0;
+
+	NVIC_DisableIRQ(DMA_IRQn);
+	GPDMA_Init();
+
+	cfgADC_LLI0.SrcAddr = (uint32_t)&(LPC_ADC->ADDR0);
+	cfgADC_LLI0.DstAddr = (uint32_t)adc_samples;
+	cfgADC_LLI0.NextLLI = (uint32_t)&cfgADC_LLI0;
+	cfgADC_LLI0.NextLLI = (NUM_SAMPLES_ADC << 0) 	// Tamano de transferencia
+							| (1 << 18) 		// Ancho de palabra en fuente
+							| (1 << 21) 		// Ancho de palabra en destino
+							& ~(1 << 26) 		// Sin incremento en fuente
+							| (1 << 27); 		// Incremento en destino
+
+	cfgADC_DMA_CH0.ChannelNum = 0;
+	cfgADC_DMA_CH0.TransferSize = NUM_SAMPLES_ADC;
+	cfgADC_DMA_CH0.TransferType = GPDMA_TRANSFERTYPE_P2M;
+	cfgADC_DMA_CH0.TransferWidth = 0;
+	cfgADC_DMA_CH0.SrcMemAddr = 0;
+	cfgADC_DMA_CH0.DstMemAddr = (uint32_t)adc_samples;
+	cfgADC_DMA_CH0.SrcConn = GPDMA_CONN_ADC;
+	cfgADC_DMA_CH0.DstConn = 0;
+	cfgADC_DMA_CH0.DMALLI = (uint32_t)&cfgADC_LLI0;
+
+	GPDMA_Setup(&cfgADC_DMA_CH0);
+}
+
+uint16_t convertirPPM(uint16_t raw_data){
+	float rs_ro_ratio= (float) ((RL_SENSOR * (4096.0f - (float)raw_data) / (float)raw_data ) / R0_SENSOR) ;
+	uint16_t concentracion_ppm = (uint16_t) pow(100*rs_ro_ratio, -1.52f);//pow(10, ( ((log(rs_ro_ratio)-curva_CO[1])/curva_CO[2])+curva_CO[0]));
+	return concentracion_ppm;
+}
+
+void calcAverage(void){
+	uint16_t sum = 0;
+	for(uint16_t inte = 0; inte < NUM_SAMPLES_ADC; inte++){
+		sum += *(adc_samples + inte);
+	}
+	uint16_t samples_average = sum / NUM_SAMPLES_ADC;
+	samples_average_ppm = convertirPPM(samples_average);
+}
+
+
 // --- MANEJO DE INTERRUPCIONES ---
 
 void ADC_IRQHandler(void){
@@ -162,13 +225,22 @@ void ADC_IRQHandler(void){
         // Se utiliza la fórmula V_out = (ADC_Lectura / 4096) * 3300
         // Nota: Si se requiere un offset de 400 (como en tu código original), descomentar la línea:
         // float raw_adc = (float)ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_0);
-        // adc_value_mv = (uint16_t) ( ((raw_adc - 400.0f) * 3300.0f) / 4096.0f );
+        // adc_value_ppm = (uint16_t) ( ((raw_adc - 400.0f) * 3300.0f) / 4096.0f );
 
-        uint32_t raw_adc = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_0);
-        adc_value_mv = (uint16_t) ( ((float)raw_adc * 3300.0f) / 4096.0f );
+    	calcAverage();
+//    	if(samples_average_ppm >= UMBRAL_PRECAUCION_PPM){
+//			for(uint8_t i = 0; i < 3; i++){
+//				LPC_GPIO0 -> FIOSET |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
+//				for(uint32_t j = 0; j < 1000000; j++); // Delay
+//				LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
+//				for(uint32_t j = 0; j < 1000000; j++); // Delay
+//			}
+//		}
 
+        uint16_t raw_adc = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_0);
+        adc_value_ppm = convertirPPM(raw_adc);
         // --- Logica de Alarmas ---
-		if(adc_value_mv < UMBRAL_PRECAUCION_MV){
+		if(adc_value_ppm < UMBRAL_PRECAUCION_PPM){
 			// Estado SEGURO: LED Verde
 			alarm_counter = 0;
 			LPC_GPIO0 -> FIOSET |= (LED_VERDE);
@@ -177,7 +249,7 @@ void ADC_IRQHandler(void){
 			NVIC_DisableIRQ(TIMER1_IRQn);
 		} else if(alarm_counter >= 10){
 			// Estado CRITICO: LED Rojo + Buzzer
-			if (adc_value_mv >= UMBRAL_CRITICO_MV) {
+			if (adc_value_ppm >= UMBRAL_CRITICO_PPM) {
                 alarm_counter = 10; // Asegura que el estado critico se mantenga
             }
 
@@ -185,7 +257,7 @@ void ADC_IRQHandler(void){
 			LPC_GPIO0 -> FIOSET |= (LED_ROJO);
 			TIM_Cmd(LPC_TIM1, ENABLE); // Activar buzzer con PWM
 			NVIC_EnableIRQ(TIMER1_IRQn);
-		} else if(adc_value_mv >= UMBRAL_PRECAUCION_MV){
+		} else if(adc_value_ppm >= UMBRAL_PRECAUCION_PPM){
 			// Estado PRECAUCION: LED Amarillo
 			alarm_counter++; // Acumular lecturas de precaucion
 			LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_ROJO | BUZZER);
@@ -193,6 +265,14 @@ void ADC_IRQHandler(void){
 			TIM_Cmd(LPC_TIM1, DISABLE);
 			NVIC_DisableIRQ(TIMER1_IRQn);
 		}
+//		} else if(samples_average_ppm >= UMBRAL_PRECAUCION_PPM){
+//			for(uint8_t i = 0; i < 3; i++){
+//				LPC_GPIO0 -> FIOSET |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
+//				for(uint32_t j = 0; j < 1000000; j++); // Delay
+//				LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
+//				for(uint32_t j = 0; j < 1000000; j++); // Delay
+//			}
+//		}
     }
 }
 void TIMER1_IRQHandler(void){
@@ -215,7 +295,7 @@ void TIMER0_IRQHandler(void){
     if(TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT)){
         TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
         // Envía el valor de voltaje escalado para que el ESP lo maneje
-		UART_SendNumber(adc_value_mv);
+		UART_SendNumber(adc_value_ppm);
     }
 }
 
@@ -256,13 +336,11 @@ void UART_SendNumber(uint16_t num){
     uint8_t buffer[8];
 
     // Calculo de la concentracion final (PPM)
-    // Usamos el voltaje num (adc_value_mv) para calcular la concentración final.
+    // Usamos el voltaje num (adc_value_ppm) para calcular la concentración final.
     // Formula: PPM = (4.13 * V + 531.2) / 1980.0
 
-    float concentration_ppm = (4.13f * (float)num + 531.2f) / 1980.0f;
-
     // Aseguramos que la concentración sea un valor entero (ppm) para el envio UART
-    uint16_t var_co = (uint16_t)concentration_ppm;
+    uint16_t var_co = num;
 
     // 1. Convertir el numero (uint16_t) a cadena en el búfer
     intToStr(var_co, buffer);
