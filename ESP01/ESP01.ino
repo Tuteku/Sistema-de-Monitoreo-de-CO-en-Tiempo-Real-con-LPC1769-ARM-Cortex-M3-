@@ -2,8 +2,9 @@
 #include <ESP8266WebServer.h>
 
 // 1. Configuración de WiFi
-const char* ssid = "2.4Personal-4839D"; 	 // <<--- TUS CREDENCIALES
-const char* password = "mati200200"; 	// <<--- TUS CREDENALES
+// ¡IMPORTANTE! Asegúrate de que estas credenciales sean correctas.
+const char* ssid = "FCEFyN 2.4GHz"; 	// <<--- TUS CREDENCIALES
+const char* password = ""; 	// <<--- TUS CREDENALES
 
 // 2. Configuración Serial y Servidor
 #define BAUDRATE 9600
@@ -14,14 +15,17 @@ ESP8266WebServer server(80);
 
 // 3. Variables de Almacenamiento de Datos
 const int DATA_SIZE = 10;
-// Array para almacenar las últimas 10 mediciones. Usamos float para compatibilidad.
+// Array para almacenar las últimas 10 mediciones de la MUESTRA SIMPLE (para el gráfico).
 float co_values[DATA_SIZE] = {0.0}; 
-int co_index = 0; // Índice para saber dónde insertar el próximo valor
-float latest_co_value = 0.0; // <<<--- VARIABLE AÑADIDA: ALMACENA LA ÚLTIMA LECTURA
+int co_index = 0; 
+
+// --- VARIABLES CLAVE DE DATOS ---
+float latest_co_value = 0.0;     // Última MUESTRA ("U") - Usada para la ALARMA
+float average_co_value = 0.0;    // Último PROMEDIO ("P") - Usado para la referencia suavizada
 
 // --- DECLARACIÓN DE FUNCIONES ---
 void handleRoot();
-void handleData(); // Nueva función para servir solo el JSON
+void handleData(); 
 void handleSerial();
 String getCoDataJson();
 
@@ -30,7 +34,6 @@ void setup() {
 	Serial.begin(BAUDRATE); // Inicia Serial con el LPC1769 a 9600 baudios
 	WiFi.mode(WIFI_STA); 
 	
-	// 1. Conexión a la red WiFi
 	WiFi.begin(ssid, password);
 	Serial.print("Conectando a WiFi");
 
@@ -43,73 +46,84 @@ void setup() {
 	Serial.print("Dirección IP: ");
 	Serial.println(WiFi.localIP()); 
 
-	// 2. Definición de Handlers
 	server.on("/", handleRoot); 
-	server.on("/data", handleData); // NUEVA RUTA: Sirve el JSON de datos para el AJAX
+	server.on("/data", handleData); 
 	
-	// 3. Iniciar el servidor
 	server.begin();
 	Serial.println("Servidor HTTP iniciado");
 }
 
 // --- LOOP PRINCIPAL ---
 void loop() {
-	// 1. Manejar las peticiones HTTP pendientes (OBLIGATORIO para el servidor)
 	server.handleClient(); 
-	
-	// 2. Manejar la lectura serial desde el LPC1769
 	handleSerial();
 }
 
 // --- FUNCIONES DE LECTURA SERIAL ---
 
 void handleSerial() {
-	// Revisa si hay datos disponibles en el puerto Serial
 	if (Serial.available() > 0) {
-		
-		// Lee la cadena hasta que encuentra un salto de línea (delimitador)
 		String dataString = Serial.readStringUntil('\n');
 		dataString.trim(); // Elimina espacios en blanco y caracteres de control
 
-		// Verifica que la cadena no esté vacía
 		if (dataString.length() > 0) {
 			
-			// Convierte la cadena (ej: "5") a un valor de punto flotante. 
-            // Aunque el LPC envía un entero, toFloat funciona bien para el almacenamiento.
-			float newValue = dataString.toFloat();
+			// 1. EXTRAER EL PREFIJO (Primer caracter: 'U' o 'P')
+			char prefix = dataString.charAt(0);
 			
-			// Muestra el valor recibido para depuración
-			Serial.print("Value Received: ");
+			// 2. EXTRAER EL VALOR (Removiendo el prefijo)
+			// La subcadena empieza en el índice 1 (después de 'U' o 'P')
+			String valueString = dataString.substring(1); 
+			
+			float newValue = valueString.toFloat();
+			
+			// DEPURA: Imprime el dato y su tipo
+			Serial.print("Received: ");
+			Serial.print(prefix);
+			Serial.print("=");
 			Serial.println(newValue, 2); 
 
-			// Almacenamiento: Inserta el nuevo valor en el array circularmente
-			co_values[co_index] = newValue;
-			co_index = (co_index + 1) % DATA_SIZE; 
-			latest_co_value = newValue; // <<<--- ACTUALIZACIÓN CRÍTICA
+			// 3. ASIGNACIÓN CONDICIONAL: 
+            // Guarda el valor en la variable correspondiente según el prefijo
+			if (prefix == 'U') {
+				// Dato es la MUESTRA SIMPLE (latest_co_value)
+				latest_co_value = newValue;
+				
+				// Usamos la muestra simple para el historial del gráfico
+				co_values[co_index] = newValue;
+				co_index = (co_index + 1) % DATA_SIZE; 
+				
+			} else if (prefix == 'P') {
+				// Dato es el PROMEDIO (average_co_value)
+				average_co_value = newValue;
+			}
 		}
 	}
 }
 
 // --- FUNCIONES DEL SERVIDOR WEB ---
 
-// Construye la cadena JSON del array de datos y el último valor
+// Construye la cadena JSON con la muestra, el promedio y el historial.
 String getCoDataJson() {
-	String json = "{\"values\":["; // <<<--- CAMBIO DE FORMATO JSON
+	String json = "{\"values\":["; // Historial de MUESTRAS SIMPLES
 	
-	// 1. Array de valores
+	// 1. Array de valores (Muestras Simples para el gráfico)
 	for (int i = 0; i < DATA_SIZE; i++) {
-		json += String(co_values[i], 2); // Agrega el valor con dos decimales
+		json += String(co_values[i], 2); 
 		if (i < DATA_SIZE - 1) {
 			json += ","; 
 		}
 	}
 	json += "],";
 	
-	// 2. Último valor
-	json += "\"latest\":" + String(latest_co_value, 2);
+	// 2. Última Muestra Simple ("U")
+	json += "\"latest\":" + String(latest_co_value, 2) + ",";
+	
+	// 3. Último Promedio ("P")
+	json += "\"average\":" + String(average_co_value, 2);
 	
 	json += "}";
-	// El formato JSON final es: {"values":[1.0, 2.0, ...], "latest": 3.0}
+	// Formato JSON final: {"values":[1.0, 2.0, ...], "latest": 3.0, "average": 2.5}
 	return json;
 }
 
@@ -126,7 +140,7 @@ void handleRoot() {
 <!DOCTYPE html>
 <html>
 <head>
-	<title>Monitor CO Dinamico</title>
+	<title>Monitor CO Dinámico</title>
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<style>
 		body { font-family: 'Inter', sans-serif; text-align: center; margin: 0; padding: 20px; background-color: #f4f7f6; }
@@ -144,6 +158,7 @@ void handleRoot() {
 			border-radius: 9999px; 
 			color: white; 
 			margin-top: 10px;
+			transition: background-color 0.5s; /* Animación de color */
 		}
 		.status-safe { background-color: #10b981; } /* Green */
 		.status-caution { background-color: #f59e0b; } /* Yellow */
@@ -152,17 +167,17 @@ void handleRoot() {
 </head>
 <body>
 	<div class="container">
-		<h1>Monitor de Concentracion de CO</h1>
-		<p class="sub-header">Datos en tiempo real desde LPC1769 via UART/ESP-01.</p>
+		<h1>Monitor de Concentración de CO</h1>
+		<p class="sub-header">Datos en tiempo real desde LPC1769 vía UART/ESP-01.</p>
 		
 		<div class="data-display">
 			<div class="metric">
 				<p class="metric-value" id="latest_value">0</p>
-				<p class="metric-label">Ultima Concentracion (ppm)</p>
+				<p class="metric-label">Muestra Última (ppm)</p>
 			</div>
 			<div class="metric">
-				<p class="metric-value" id="status_text">Seguro</p>
-				<p class="metric-label">Estado</p>
+				<p class="metric-value" id="average_value">0</p>
+				<p class="metric-label">Promedio (ppm)</p>
 			</div>
 		</div>
 
@@ -170,9 +185,9 @@ void handleRoot() {
 			<div class="status-indicator status-safe" id="status_bar">Nivel Seguro</div>
 		</div>
 		
-		<p class="sub-header">Ultimos <span id="data_size_display">)=====");
+		<p class="sub-header">Historial de <span id="data_size_display">)=====");
 	html += String(DATA_SIZE); // Inyecta DATA_SIZE
-	html += F(R"=====(</span> valores. Actualizacion cada )=====");
+	html += F(R"=====(</span> muestras. Actualización cada )=====");
 	html += String((float)REFRESH_INTERVAL_MS / 1000.0f, 2); // Inyecta el tiempo de refresco en segundos
 	html += F(R"=====(s.</p>
 		
@@ -192,7 +207,7 @@ void handleRoot() {
 		const UMBRAL_PRECAUCION = 2; 
 		const UMBRAL_CRITICO = 5; 
 		
-		let co_data = []; // El array comienza vacío y se llena con AJAX
+		let co_data = []; 
 		
 		const canvas = document.getElementById('coChart');
 		const ctx = canvas.getContext('2d');
@@ -213,17 +228,16 @@ void handleRoot() {
 			const h = canvas.height;
 			const padding = 30;
 
-			if (co_data.length === 0) return; // No dibujar si no hay datos
+			if (co_data.length === 0) return; 
 
 			// Calcula el valor máximo para la escala Y
 			let maxVal = Math.max(...co_data);
 			if (maxVal === -Infinity || maxVal < UMBRAL_CRITICO) maxVal = UMBRAL_CRITICO * 1.5; 
 			else maxVal *= 1.2; 
 			
-			// Si maxVal es 0, forzar un valor mínimo para que el gráfico sea visible.
 			if (maxVal === 0) maxVal = 10;
 
-			ctx.clearRect(0, 0, w, h); // Limpiar el canvas
+			ctx.clearRect(0, 0, w, h); 
 
 			// --- Zonas de color (Fondo del gráfico) ---
 			
@@ -237,7 +251,7 @@ void handleRoot() {
 			ctx.fillStyle = 'rgba(245, 158, 11, 0.1)';
 			ctx.fillRect(padding, criticalY, w - 2 * padding, cautionY - criticalY);
 			
-			// Zona SEGURA (Verde) - Del umbral de precaución hacia abajo
+			// Zona SEGURA (Verde)
 			ctx.fillStyle = 'rgba(16, 185, 129, 0.1)';
 			ctx.fillRect(padding, cautionY, w - 2 * padding, h - padding - cautionY);
 
@@ -305,26 +319,28 @@ void handleRoot() {
 		}
 
 		// --- FUNCIÓN DE ESTADO ---
-		function updateStatus(value) {
+		function updateStatus(latestValue, averageValue) {
 			const statusElement = document.getElementById('status_bar');
-			const valueElement = document.getElementById('latest_value');
-			const textElement = document.getElementById('status_text');
+			const latestElement = document.getElementById('latest_value');
+			const averageElement = document.getElementById('average_value');
+			
+			// Usamos la MUESTRA SIMPLE (latestValue) para definir la ALARMA
+			const valueForAlarm = latestValue; 
 
-			valueElement.textContent = value.toFixed(0);
+			latestElement.textContent = latestValue.toFixed(0);
+			averageElement.textContent = averageValue.toFixed(1);
+
 			statusElement.className = 'status-indicator'; // Resetear clases
 
-			if (value > UMBRAL_CRITICO) {
+			if (valueForAlarm > UMBRAL_CRITICO) {
 				statusElement.classList.add('status-critical');
-				statusElement.textContent = "¡PELIGRO CRITICO!";
-				textElement.textContent = "Critico";
-			} else if (value > UMBRAL_PRECAUCION) {
+				statusElement.textContent = "¡PELIGRO CRÍTICO!";
+			} else if (valueForAlarm > UMBRAL_PRECAUCION) {
 				statusElement.classList.add('status-caution');
-				statusElement.textContent = "Precaucion Alta";
-				textElement.textContent = "Precaucion";
+				statusElement.textContent = "Precaución Alta";
 			} else {
 				statusElement.classList.add('status-safe');
 				statusElement.textContent = "Nivel Seguro";
-				textElement.textContent = "Seguro";
 			}
 		}
 
@@ -333,7 +349,6 @@ void handleRoot() {
 
 		function updateData() {
 			const xhr = new XMLHttpRequest();
-			// Petición a la ruta /data
 			xhr.open('GET', '/data', true); 
 			xhr.setRequestHeader('Content-Type', 'application/json');
 
@@ -341,12 +356,15 @@ void handleRoot() {
 				if (xhr.status === 200) {
 					try {
 						const data = JSON.parse(xhr.responseText);
-						// El nuevo array de valores
+						
+						// 1. Obtener Historial (Muestras Simples)
 						co_data = data.values; 
 						
-						// Actualizar elementos
-						updateStatus(data.latest);
-						drawChart(); // Redibuja el gráfico con los nuevos datos
+						// 2. Actualizar Estado y Valores Numéricos con Muestra y Promedio
+						updateStatus(data.latest, data.average);
+
+						// 3. Redibujar el Gráfico
+						drawChart(); 
 					} catch (e) {
 						console.error("Error al parsear JSON:", e);
 					}
@@ -361,10 +379,8 @@ void handleRoot() {
 		// Configurar la actualización dinámica usando la constante inyectada
 		setInterval(updateData, REFRESH_INTERVAL_MS); 
 
-		// Intentar una carga inicial
+		// Intentar una carga inicial y resize
 		updateData();
-		
-		// Llamar a resize al inicio para configurar el canvas correctamente
 		resizeCanvas();
 	</script>
 
