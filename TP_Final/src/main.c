@@ -1,7 +1,3 @@
-/*
-Togglea el led rojo integrado cada 1 segundo usando el Timer0 del LPC1769.
-*/
-
 #include "lpc17xx.h"
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_timer.h"
@@ -9,6 +5,7 @@ Togglea el led rojo integrado cada 1 segundo usando el Timer0 del LPC1769.
 #include "lpc17xx_uart.h"
 #include "lpc17xx_adc.h"
 #include "lpc17xx_gpdma.h"
+#include "lpc17xx_exti.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -16,20 +13,24 @@ Togglea el led rojo integrado cada 1 segundo usando el Timer0 del LPC1769.
 #define LED_VERDE 		(1<<27)
 #define LED_AMARILLO 	(1<<3)
 #define BUZZER 			(1<<22)
-#define ADC_FREQ 		20000
 
-#define UMBRAL_PRECAUCION_PPM    5   	// Ajustar segun calibracion
-#define UMBRAL_CRITICO_PPM 		5000 	// Ajustar segun calibracion
+#define ADC_FREQ 		20000
+#define NUM_SAMPLES_ADC	10
+
+#define UMBRAL_PRECAUCION_PPM   4   	// Ajustar segun calibracion
 #define R0_SENSOR				86.19  	// Resistencia en kOhm del sensor a 100ppm de CO en aire limpio
 #define RL_SENSOR				1 		// Resistencia de carga en kOhm del sensor
 
-#define NUM_SAMPLES_ADC			10
+#define BUFFER0_START	0x2007C000
+#define BUFFER1_START	(BUFFER0_START + (NUM_SAMPLES_ADC*sizeof(uint32_t)))
 
-float curva_CO[3] = {50.0, -0.97, -0.0194};
-volatile uint16_t adc_value_ppm = 0;
-volatile uint8_t flag_buzzer_toggle = 0;
-volatile uint16_t *adc_samples;
-volatile uint16_t samples_average_ppm = 0;
+volatile uint8_t 	flag_buzzer_toggle = 0;
+volatile uint8_t 	status_flag = 0;
+
+volatile uint32_t 	*actual_adc_samples = (volatile uint32_t *) BUFFER0_START;
+volatile uint16_t 	last_adc_value_ppm = 0;
+volatile uint32_t 	*last_samples = (volatile uint32_t *) BUFFER1_START;
+volatile uint16_t 	samples_average_ppm = 0;
 
 
 void cfgPin(uint8_t port_num, uint8_t pin_num, uint8_t func_num);
@@ -38,13 +39,13 @@ void cfgTimer(void);
 void cfgADC(void);
 void cfgUART(void);
 void cfgDMA(void);
-void calcAverage(void);
-uint16_t convertirPPM(uint16_t raw_data);
+void cfgEXTI(void);
+
+uint16_t calc_average_ppm(void);
+uint16_t convert_adc_to_ppm(uint16_t raw_data);
 
 
-void UART_SendString(char *str); 				//Funcion para mandar string por UART
-void UART_SendNumber(uint16_t num); 			//Funcion para mandar las mediciones del sensor
-void intToStr(uint16_t num, uint8_t buffer[]);
+void UART_SendNumber(char prefix, uint16_t num); 			//Funcion para mandar las mediciones del sensor
 
 int main(){
 
@@ -59,21 +60,12 @@ int main(){
     }
 
 	cfgUART();
-	cfgDMA();
+    cfgEXTI();
+//	cfgDMA();
     cfgADC();
     cfgTimer();
 
-	while(1){
-//		calcAverage();
-		if(samples_average_ppm >= UMBRAL_PRECAUCION_PPM){
-			for(uint8_t i = 0; i < 3; i++){
-				LPC_GPIO0 -> FIOSET |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
-				for(uint32_t j = 0; j < 1000000; j++); // Delay
-				LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
-				for(uint32_t j = 0; j < 1000000; j++); // Delay
-			}
-		}
-	};
+	while(1){};
 
     return 0;
 }
@@ -124,6 +116,7 @@ void cfgTimer(void){
 	TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &timerMode0);
 	TIM_ConfigMatch(LPC_TIM0, &timerMAT01);
 	TIM_Cmd(LPC_TIM0, ENABLE);
+	NVIC_SetPriority(TIMER0_IRQn, 2);
 	NVIC_EnableIRQ(TIMER0_IRQn);
 
 	// --- Timer 1: Generador de Tono para Buzzer (Alarma) ---
@@ -143,6 +136,7 @@ void cfgTimer(void){
 
 	TIM_Init(LPC_TIM1, TIM_TIMER_MODE, &timerMode1);
 	TIM_ConfigMatch(LPC_TIM1, &timerMAT10);
+	NVIC_SetPriority(TIMER0_IRQn, 3);
 }
 
 void cfgADC(void){
@@ -153,6 +147,7 @@ void cfgADC(void){
 	ADC_ChannelCmd(LPC_ADC, ADC_CHANNEL_0, ENABLE); // Habilitar canal 0
 	ADC_IntConfig(LPC_ADC, ADC_ADINTEN0, ENABLE); // Habilitar interrupcion en canal 0
 
+	NVIC_SetPriority(ADC_IRQn, 4);
 	NVIC_EnableIRQ(ADC_IRQn);
 }
 
@@ -176,11 +171,11 @@ void cfgDMA(void){
 	GPDMA_Init();
 
 	cfgADC_LLI0.SrcAddr = (uint32_t)&(LPC_ADC->ADDR0);
-	cfgADC_LLI0.DstAddr = (uint32_t)adc_samples;
+	cfgADC_LLI0.DstAddr = (uint32_t)actual_adc_samples;
 	cfgADC_LLI0.NextLLI = (uint32_t)&cfgADC_LLI0;
-	cfgADC_LLI0.NextLLI = (NUM_SAMPLES_ADC << 0) 	// Tamano de transferencia
-							| (1 << 18) 		// Ancho de palabra en fuente
-							| (1 << 21) 		// Ancho de palabra en destino
+	cfgADC_LLI0.Control = (NUM_SAMPLES_ADC << 0) 	// Tamano de transferencia
+							| (2 << 18) 		// Ancho de palabra en fuente 16 bits
+							| (2 << 21) 		// Ancho de palabra en destino 16 bits
 							& ~(1 << 26) 		// Sin incremento en fuente
 							| (1 << 27); 		// Incremento en destino
 
@@ -189,27 +184,80 @@ void cfgDMA(void){
 	cfgADC_DMA_CH0.TransferType = GPDMA_TRANSFERTYPE_P2M;
 	cfgADC_DMA_CH0.TransferWidth = 0;
 	cfgADC_DMA_CH0.SrcMemAddr = 0;
-	cfgADC_DMA_CH0.DstMemAddr = (uint32_t)adc_samples;
+	cfgADC_DMA_CH0.DstMemAddr = (uint32_t)actual_adc_samples;
 	cfgADC_DMA_CH0.SrcConn = GPDMA_CONN_ADC;
 	cfgADC_DMA_CH0.DstConn = 0;
 	cfgADC_DMA_CH0.DMALLI = (uint32_t)&cfgADC_LLI0;
 
 	GPDMA_Setup(&cfgADC_DMA_CH0);
+
+	GPDMA_Channel_CFG_Type  cfgMEM_DMA_CH7;
+
+	cfgMEM_DMA_CH7.ChannelNum = 7;
+	cfgMEM_DMA_CH7.TransferSize = NUM_SAMPLES_ADC;
+	cfgMEM_DMA_CH7.TransferType = GPDMA_TRANSFERTYPE_P2M;
+	cfgMEM_DMA_CH7.TransferWidth = GPDMA_WIDTH_WORD;
+	cfgMEM_DMA_CH7.SrcMemAddr = (uint32_t)actual_adc_samples;
+	cfgMEM_DMA_CH7.DstMemAddr = (uint32_t)last_samples;
+	cfgMEM_DMA_CH7.SrcConn = 0;
+	cfgMEM_DMA_CH7.DstConn = 0;
+	cfgMEM_DMA_CH7.DMALLI = 0;
+
+	GPDMA_Setup(&cfgMEM_DMA_CH7);
+	GPDMA_ChannelCmd(7, DISABLE);
+
+	NVIC_SetPriority(DMA_IRQn, 10);
 }
 
-uint16_t convertirPPM(uint16_t raw_data){
-	float rs_ro_ratio= (float) ((RL_SENSOR * (4096.0f - (float)raw_data) / (float)raw_data ) / R0_SENSOR) ;
-	uint16_t concentracion_ppm = (uint16_t) pow(100*rs_ro_ratio, -1.52f);//pow(10, ( ((log(rs_ro_ratio)-curva_CO[1])/curva_CO[2])+curva_CO[0]));
-	return concentracion_ppm;
+void cfgEXTI(void){
+	PINSEL_CFG_Type pin;
+	pin.Portnum = 2;
+	pin.Pinnum = 10;
+	pin.Funcnum = 1;
+	pin.Pinmode = PINSEL_PINMODE_PULLUP;
+	pin.OpenDrain = PINSEL_PINMODE_NORMAL;
+	PINSEL_ConfigPin(&pin);
+
+	EXTI_InitTypeDef cfgEINT0;
+
+	EXTI_Init();
+
+	cfgEINT0.EXTI_Line = EXTI_EINT0;
+	cfgEINT0.EXTI_Mode = EXTI_MODE_EDGE_SENSITIVE;
+	cfgEINT0.EXTI_polarity = EXTI_POLARITY_LOW_ACTIVE_OR_FALLING_EDGE;
+	EXTI_Config(&cfgEINT0);
+	NVIC_SetPriority(EINT0_IRQn, 1);
+	NVIC_EnableIRQ(EINT0_IRQn);
 }
 
-void calcAverage(void){
-	uint16_t sum = 0;
+uint16_t convert_adc_to_ppm(uint16_t raw_data){
+	// El valor raw es de 12 bits (0-4095)
+	if (raw_data == 0) return 0;
+
+	// Voltaje de salida del sensor Vs = (raw_data / 4096) * 3.3V
+	// Resistencia del sensor Rs = (3.3V - Vs) / (Vs / RL_SENSOR)
+	// Resistencia del sensor Rs = RL_SENSOR * (4096 - raw_data) / raw_data
+	float rs = (float) RL_SENSOR * (4096 - raw_data) / raw_data;
+
+	// Relacion Rs/Ro
+	float rs_ro_ratio = rs / R0_SENSOR;
+
+	uint16_t concentracion_ppm = (uint16_t) pow(100.0f * rs_ro_ratio, -1.52f);
+
+	// Asegurar un valor positivo
+	return (concentracion_ppm > 0) ? concentracion_ppm : 0;
+}
+
+uint16_t calc_average_ppm(void){
+	uint32_t sum = 0;
+
+	// Iteracion sobre el banco de memoria
 	for(uint16_t inte = 0; inte < NUM_SAMPLES_ADC; inte++){
-		sum += *(adc_samples + inte);
+		// Extraccion del valor del ADC de 12 bits de la palabra de 32 bits (bits 4-15)
+		sum += (*(last_samples + inte) >> 4) & 0x0FFF;
 	}
-	uint16_t samples_average = sum / NUM_SAMPLES_ADC;
-	samples_average_ppm = convertirPPM(samples_average);
+	uint16_t samples_average = (uint16_t) sum / NUM_SAMPLES_ADC;
+	return convert_adc_to_ppm(samples_average);
 }
 
 
@@ -221,43 +269,24 @@ void ADC_IRQHandler(void){
 
     if(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_0, ADC_DATA_DONE)){
 
-        // CORRECCIÓN: Cálculo preciso del voltaje escalado (0-3300 mV)
-        // Se utiliza la fórmula V_out = (ADC_Lectura / 4096) * 3300
-        // Nota: Si se requiere un offset de 400 (como en tu código original), descomentar la línea:
-        // float raw_adc = (float)ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_0);
-        // adc_value_ppm = (uint16_t) ( ((raw_adc - 400.0f) * 3300.0f) / 4096.0f );
-
-    	calcAverage();
-//    	if(samples_average_ppm >= UMBRAL_PRECAUCION_PPM){
-//			for(uint8_t i = 0; i < 3; i++){
-//				LPC_GPIO0 -> FIOSET |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
-//				for(uint32_t j = 0; j < 1000000; j++); // Delay
-//				LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
-//				for(uint32_t j = 0; j < 1000000; j++); // Delay
-//			}
-//		}
-
-        uint16_t raw_adc = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_0);
-        adc_value_ppm = convertirPPM(raw_adc);
+        uint16_t raw_adc = (uint16_t)((ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_0) >> 4) & 0x0FFF);
+        last_adc_value_ppm = convert_adc_to_ppm(raw_adc);
         // --- Logica de Alarmas ---
-		if(adc_value_ppm < UMBRAL_PRECAUCION_PPM){
+		if(last_adc_value_ppm < UMBRAL_PRECAUCION_PPM){
 			// Estado SEGURO: LED Verde
 			alarm_counter = 0;
 			LPC_GPIO0 -> FIOSET |= (LED_VERDE);
 			LPC_GPIO0 -> FIOCLR |= (LED_AMARILLO | LED_ROJO | BUZZER);
 	        TIM_Cmd(LPC_TIM1, DISABLE);
 			NVIC_DisableIRQ(TIMER1_IRQn);
-		} else if(alarm_counter >= 10){
+		} else if(alarm_counter >= 7){
 			// Estado CRITICO: LED Rojo + Buzzer
-			if (adc_value_ppm >= UMBRAL_CRITICO_PPM) {
-                alarm_counter = 10; // Asegura que el estado critico se mantenga
-            }
 
 			LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_AMARILLO);
 			LPC_GPIO0 -> FIOSET |= (LED_ROJO);
 			TIM_Cmd(LPC_TIM1, ENABLE); // Activar buzzer con PWM
 			NVIC_EnableIRQ(TIMER1_IRQn);
-		} else if(adc_value_ppm >= UMBRAL_PRECAUCION_PPM){
+		} else if(last_adc_value_ppm >= UMBRAL_PRECAUCION_PPM){
 			// Estado PRECAUCION: LED Amarillo
 			alarm_counter++; // Acumular lecturas de precaucion
 			LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_ROJO | BUZZER);
@@ -265,14 +294,6 @@ void ADC_IRQHandler(void){
 			TIM_Cmd(LPC_TIM1, DISABLE);
 			NVIC_DisableIRQ(TIMER1_IRQn);
 		}
-//		} else if(samples_average_ppm >= UMBRAL_PRECAUCION_PPM){
-//			for(uint8_t i = 0; i < 3; i++){
-//				LPC_GPIO0 -> FIOSET |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
-//				for(uint32_t j = 0; j < 1000000; j++); // Delay
-//				LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_ROJO | LED_AMARILLO | BUZZER);
-//				for(uint32_t j = 0; j < 1000000; j++); // Delay
-//			}
-//		}
     }
 }
 void TIMER1_IRQHandler(void){
@@ -294,73 +315,49 @@ void TIMER0_IRQHandler(void){
 	// Maneja el evento de envio UART (ocurre cada 500ms)
     if(TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT)){
         TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
-        // Envía el valor de voltaje escalado para que el ESP lo maneje
-		UART_SendNumber(adc_value_ppm);
+        // Envía el valor de ppm para que el ESP lo maneje
+		if(status_flag){
+			UART_SendNumber('P' ,last_adc_value_ppm);
+		}else{
+			UART_SendNumber('U', samples_average_ppm);
+		}
     }
+}
+
+void EINT0_IRQHandler(void){
+	if(status_flag){
+		status_flag = 0;
+		NVIC_DisableIRQ(DMA_IRQn);
+		GPDMA_ChannelCmd(7, DISABLE);
+		GPDMA_ChannelCmd(0, ENABLE);
+	}else{
+		status_flag = 1;
+		NVIC_EnableIRQ(DMA_IRQn);
+		GPDMA_ChannelCmd(0, DISABLE);
+		GPDMA_ChannelCmd(7, ENABLE);
+	}
+	LPC_SC->EXTINT |= (1<<0);
+}
+
+void DMA_IRQHandler(void){
+	if(GPDMA_IntGetStatus(GPDMA_STAT_INTTC, 7)){
+		samples_average_ppm = calc_average_ppm();
+		GPDMA_ClearIntPending(GPDMA_STAT_INTTC, 7);
+	}
 }
 
 // --- FUNCIONES DE CONVERSIÓN Y UART ---
 
-// Función auxiliar para convertir un número (uint16_t) a cadena (char array)
-void intToStr(uint16_t num, uint8_t buffer[]) {
-    int i = 0;
-    uint16_t temp = num;
-
-    if (num == 0) {
-        buffer[i++] = '0';
-        buffer[i] = '\0';
-        return;
-    }
-
-    // Procesar dígitos en orden inverso
-    while (temp > 0) {
-        buffer[i++] = (temp % 10) + '0';
-        temp /= 10;
-    }
-
-    // Invertir la cadena (ej: 5100 -> 0015)
-    int len = i;
-    for (int j = 0; j < len / 2; j++) {
-        char swap = buffer[j];
-        buffer[j] = buffer[len - 1 - j];
-        buffer[len - 1 - j] = swap;
-    }
-
-    // Agregar el terminador nulo \0
-    buffer[len] = '\0';
-}
-
 // Envia el valor de concentracion al ESP8266
-void UART_SendNumber(uint16_t num){
-    // Buffer seguro para 5 dígitos + '\n' + '\0'
-    uint8_t buffer[8];
+void UART_SendNumber(char prefix, uint16_t num){
+	// Búfer seguro para Prefijo + Valor + \n + \0
+    char tx_buffer[10];
 
-    // Calculo de la concentracion final (PPM)
-    // Usamos el voltaje num (adc_value_ppm) para calcular la concentración final.
-    // Formula: PPM = (4.13 * V + 531.2) / 1980.0
+    // Usamos sprintf para formatear y concatenar la cadena: Prefijo + Valor Entero + \n
+    int len = sprintf(tx_buffer, "%c%u\n", prefix, num);
 
-    // Aseguramos que la concentración sea un valor entero (ppm) para el envio UART
-    uint16_t var_co = num;
-
-    // 1. Convertir el numero (uint16_t) a cadena en el búfer
-    intToStr(var_co, buffer);
-
-    // 2. Encontrar la longitud de la cadena de digitos
-    int len = 0;
-    while (buffer[len] != '\0' && len < 6) {
-        len++;
-    }
-
-    // 3. AGREGAR DELIMITADOR \n
-    // Se inserta el salto de linea al final de los dígitos.
-    if (len < 7) {
-        buffer[len] = '\n';
-        // El terminador nulo es opcional aqui, pero ayuda en la depuracion.
-        buffer[len + 1] = '\0';
-
-        // 4. Enviar la cadena completa (ej: "5\n" o "1500\n").
-        // Se envia len + 1 bytes (los digitos + el '\n').
-        UART_Send(LPC_UART2, buffer, len + 1, BLOCKING);
-    }
-    // Si len >= 7, hay overflow o error, y el dato no se envia
+    // Enviar la cadena completa (Prefijo + Dígitos + '\n').
+	if (len > 0) {
+		UART_Send(LPC_UART2, (uint8_t*)tx_buffer, len, BLOCKING);
+	}
 }
