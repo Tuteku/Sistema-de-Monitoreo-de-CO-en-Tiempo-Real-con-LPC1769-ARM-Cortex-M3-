@@ -19,7 +19,7 @@
 
 #define UMBRAL_PRECAUCION_PPM   4   	// Ajustar segun calibracion
 #define R0_SENSOR				86.19  	// Resistencia en kOhm del sensor a 100ppm de CO en aire limpio
-#define RL_SENSOR				1 		// Resistencia de carga en kOhm del sensor
+#define RL_SENSOR				10 		// Resistencia de carga en kOhm del sensor
 
 #define BUFFER0_START	0x2007C000
 #define BUFFER1_START	(BUFFER0_START + (NUM_SAMPLES_ADC*sizeof(uint32_t)))
@@ -60,8 +60,8 @@ int main(){
     }
 
 	cfgUART();
-    cfgEXTI();
-//	cfgDMA();
+//    cfgEXTI();
+	cfgDMA();
     cfgADC();
     cfgTimer();
 
@@ -107,7 +107,7 @@ void cfgTimer(void){
 
 	TIM_MATCHCFG_Type timerMAT01; // Para iniciar ADC y la Interrupcion de Envio UART
 	timerMAT01.MatchChannel = 1;
-	timerMAT01.IntOnMatch = ENABLE; // Generar interrupcion para el envío UART
+	timerMAT01.IntOnMatch = DISABLE; // Generar interrupcion para el envío UART
 	timerMAT01.StopOnMatch = DISABLE;
 	timerMAT01.ResetOnMatch = ENABLE;
 	timerMAT01.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE; // Trigger para el ADC
@@ -116,8 +116,6 @@ void cfgTimer(void){
 	TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &timerMode0);
 	TIM_ConfigMatch(LPC_TIM0, &timerMAT01);
 	TIM_Cmd(LPC_TIM0, ENABLE);
-	NVIC_SetPriority(TIMER0_IRQn, 2);
-	NVIC_EnableIRQ(TIMER0_IRQn);
 
 	// --- Timer 1: Generador de Tono para Buzzer (Alarma) ---
 	// Se usa como base de tiempo para alternar el Buzzer en el ISR de TIMER1
@@ -133,10 +131,8 @@ void cfgTimer(void){
 	timerMAT10.ExtMatchOutputType = TIM_EXTMATCH_NOTHING;
 	timerMAT10.MatchValue = 500; // Genera interrupción cada 500ms
 
-
 	TIM_Init(LPC_TIM1, TIM_TIMER_MODE, &timerMode1);
 	TIM_ConfigMatch(LPC_TIM1, &timerMAT10);
-	NVIC_SetPriority(TIMER0_IRQn, 3);
 }
 
 void cfgADC(void){
@@ -147,7 +143,6 @@ void cfgADC(void){
 	ADC_ChannelCmd(LPC_ADC, ADC_CHANNEL_0, ENABLE); // Habilitar canal 0
 	ADC_IntConfig(LPC_ADC, ADC_ADINTEN0, ENABLE); // Habilitar interrupcion en canal 0
 
-	NVIC_SetPriority(ADC_IRQn, 4);
 	NVIC_EnableIRQ(ADC_IRQn);
 }
 
@@ -174,8 +169,8 @@ void cfgDMA(void){
 	cfgADC_LLI0.DstAddr = (uint32_t)actual_adc_samples;
 	cfgADC_LLI0.NextLLI = (uint32_t)&cfgADC_LLI0;
 	cfgADC_LLI0.Control = (NUM_SAMPLES_ADC << 0) 	// Tamano de transferencia
-							| (2 << 18) 		// Ancho de palabra en fuente 16 bits
-							| (2 << 21) 		// Ancho de palabra en destino 16 bits
+							| (1 << 18) 		// Ancho de palabra en fuente 16 bits
+							| (1 << 21) 		// Ancho de palabra en destino 16 bits
 							& ~(1 << 26) 		// Sin incremento en fuente
 							| (1 << 27); 		// Incremento en destino
 
@@ -195,7 +190,7 @@ void cfgDMA(void){
 
 	cfgMEM_DMA_CH7.ChannelNum = 7;
 	cfgMEM_DMA_CH7.TransferSize = NUM_SAMPLES_ADC;
-	cfgMEM_DMA_CH7.TransferType = GPDMA_TRANSFERTYPE_P2M;
+	cfgMEM_DMA_CH7.TransferType = GPDMA_TRANSFERTYPE_M2M;
 	cfgMEM_DMA_CH7.TransferWidth = GPDMA_WIDTH_WORD;
 	cfgMEM_DMA_CH7.SrcMemAddr = (uint32_t)actual_adc_samples;
 	cfgMEM_DMA_CH7.DstMemAddr = (uint32_t)last_samples;
@@ -205,8 +200,6 @@ void cfgDMA(void){
 
 	GPDMA_Setup(&cfgMEM_DMA_CH7);
 	GPDMA_ChannelCmd(7, DISABLE);
-
-	NVIC_SetPriority(DMA_IRQn, 10);
 }
 
 void cfgEXTI(void){
@@ -226,7 +219,6 @@ void cfgEXTI(void){
 	cfgEINT0.EXTI_Mode = EXTI_MODE_EDGE_SENSITIVE;
 	cfgEINT0.EXTI_polarity = EXTI_POLARITY_LOW_ACTIVE_OR_FALLING_EDGE;
 	EXTI_Config(&cfgEINT0);
-	NVIC_SetPriority(EINT0_IRQn, 1);
 	NVIC_EnableIRQ(EINT0_IRQn);
 }
 
@@ -242,7 +234,7 @@ uint16_t convert_adc_to_ppm(uint16_t raw_data){
 	// Relacion Rs/Ro
 	float rs_ro_ratio = rs / R0_SENSOR;
 
-	uint16_t concentracion_ppm = (uint16_t) pow(100.0f * rs_ro_ratio, -1.52f);
+	uint16_t concentracion_ppm = (uint16_t) 100.0f * pow(rs_ro_ratio, -1.52f);
 
 	// Asegurar un valor positivo
 	return (concentracion_ppm > 0) ? concentracion_ppm : 0;
@@ -269,7 +261,7 @@ void ADC_IRQHandler(void){
 
     if(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_0, ADC_DATA_DONE)){
 
-        uint16_t raw_adc = (uint16_t)((ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_0) >> 4) & 0x0FFF);
+        uint16_t raw_adc = (uint16_t)((ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_0)));// >> 4) & 0x0FFF);
         last_adc_value_ppm = convert_adc_to_ppm(raw_adc);
         // --- Logica de Alarmas ---
 		if(last_adc_value_ppm < UMBRAL_PRECAUCION_PPM){
@@ -280,6 +272,12 @@ void ADC_IRQHandler(void){
 	        TIM_Cmd(LPC_TIM1, DISABLE);
 			NVIC_DisableIRQ(TIMER1_IRQn);
 		} else if(alarm_counter >= 7){
+			alarm_counter++;
+			if(alarm_counter >= 50){
+				status_flag = 1;
+				NVIC_EnableIRQ(DMA_IRQn);
+				GPDMA_ChannelCmd(7, ENABLE);
+			}
 			// Estado CRITICO: LED Rojo + Buzzer
 
 			LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_AMARILLO);
@@ -293,6 +291,12 @@ void ADC_IRQHandler(void){
 			LPC_GPIO0 -> FIOSET |= (LED_AMARILLO);
 			TIM_Cmd(LPC_TIM1, DISABLE);
 			NVIC_DisableIRQ(TIMER1_IRQn);
+		}
+
+		if(status_flag){
+			UART_SendNumber('P' ,samples_average_ppm);
+		}else{
+			UART_SendNumber('U', last_adc_value_ppm);
 		}
     }
 }
@@ -308,19 +312,6 @@ void TIMER1_IRQHandler(void){
             LPC_GPIO0 -> FIOCLR |= (BUZZER);
             flag_buzzer_toggle = 0;
         }
-    }
-}
-
-void TIMER0_IRQHandler(void){
-	// Maneja el evento de envio UART (ocurre cada 500ms)
-    if(TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT)){
-        TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
-        // Envía el valor de ppm para que el ESP lo maneje
-		if(status_flag){
-			UART_SendNumber('P' ,last_adc_value_ppm);
-		}else{
-			UART_SendNumber('U', samples_average_ppm);
-		}
     }
 }
 
