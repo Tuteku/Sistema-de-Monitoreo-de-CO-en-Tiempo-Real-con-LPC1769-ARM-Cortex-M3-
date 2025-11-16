@@ -27,9 +27,9 @@
 volatile uint8_t 	flag_buzzer_toggle = 0;
 volatile uint8_t 	status_flag = 0;
 
-volatile uint32_t 	*actual_adc_samples = (volatile uint32_t *) BUFFER0_START;
+volatile uint32_t 	actual_adc_samples[NUM_SAMPLES_ADC] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
 volatile uint16_t 	last_adc_value_ppm = 0;
-volatile uint32_t 	*last_samples = (volatile uint32_t *) BUFFER1_START;
+volatile uint32_t 	last_samples[NUM_SAMPLES_ADC] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
 volatile uint16_t 	samples_average_ppm = 0;
 
 
@@ -156,7 +156,7 @@ void cfgADC(void){
 	ADC_Init(LPC_ADC, ADC_FREQ);
 	ADC_BurstCmd(LPC_ADC, DISABLE); // Deshabilitar modo Burst
 	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // Iniciar por Match1 del Timer 0
-	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING);
+	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_FALLING);
 	ADC_ChannelCmd(LPC_ADC, ADC_CHANNEL_0, ENABLE); // Habilitar canal 0
 	ADC_IntConfig(LPC_ADC, ADC_ADINTEN0, ENABLE); // Habilitar interrupcion en canal 0
 
@@ -243,7 +243,7 @@ uint16_t calc_average_ppm(void){
 	// Iteracion sobre el banco de memoria
 	for(uint16_t inte = 0; inte < NUM_SAMPLES_ADC; inte++){
 		// Extraccion del valor del ADC de 12 bits de la palabra de 32 bits (bits 4-15)
-		uint16_t aux = convert_adc_to_ppm((*(last_samples + inte) >> 4) & 0x0FFF);
+		uint16_t aux = convert_adc_to_ppm((last_samples[inte]));// >> 4) & 0x0FFF);
 		sum += aux;
 	}
 	uint16_t samples_average = (uint16_t) sum / NUM_SAMPLES_ADC;
@@ -314,18 +314,18 @@ void TIMER2_IRQHandler(void){
         	status_flag = 1;
 			TIM_UpdateMatchValue(LPC_TIM2, 0, 3000);
 			TIM_ResetCounter(LPC_TIM2);
-//        	GPDMA_ChannelCmd(0, DISABLE);
-//        	GPDMA_ChannelCmd(7, ENABLE);
-//        	NVIC_EnableIRQ(DMA_IRQn);
-			LPC_GPIO0 -> FIOSET |= (LED_VERDE);
+        	GPDMA_ChannelCmd(0, DISABLE);
+        	GPDMA_ChannelCmd(7, ENABLE);
+        	NVIC_EnableIRQ(DMA_IRQn);
+//			LPC_GPIO0 -> FIOSET |= (LED_VERDE);
         } else{
         	status_flag = 0;
 			TIM_UpdateMatchValue(LPC_TIM2, 0, 10000);
 			TIM_ResetCounter(LPC_TIM2);
-//        	GPDMA_ChannelCmd(7, DISABLE);
-//			GPDMA_ChannelCmd(0, ENABLE);
-//			NVIC_DisableIRQ(DMA_IRQn);
-			LPC_GPIO0 -> FIOCLR |= (LED_VERDE);
+        	GPDMA_ChannelCmd(7, DISABLE);
+			GPDMA_ChannelCmd(0, ENABLE);
+			NVIC_DisableIRQ(DMA_IRQn);
+//			LPC_GPIO0 -> FIOCLR |= (LED_VERDE);
         }
         TIM_ClearIntPending(LPC_TIM2, TIM_MR0_INT);
     }
