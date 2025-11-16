@@ -17,9 +17,8 @@
 #define ADC_FREQ 		20000
 #define NUM_SAMPLES_ADC	10
 
-#define UMBRAL_PRECAUCION_PPM   4   	// Ajustar segun calibracion
-#define R0_SENSOR				86.19  	// Resistencia en kOhm del sensor a 100ppm de CO en aire limpio
-#define RL_SENSOR				10 		// Resistencia de carga en kOhm del sensor
+#define UMBRAL_PRECAUCION_PPM   5   	// Ajustar segun calibracion
+#define R0_SENSOR				1870  	// Resistencia en kOhm del sensor a 100ppm de CO en aire limpio
 
 #define BUFFER0_START	0x2007C000
 #define BUFFER1_START	(BUFFER0_START + (NUM_SAMPLES_ADC*sizeof(uint32_t)))
@@ -210,12 +209,14 @@ uint16_t convert_adc_to_ppm(uint16_t raw_data){
 	// Voltaje de salida del sensor Vs = (raw_data / 4096) * 3.3V
 	// Resistencia del sensor Rs = (3.3V - Vs) / (Vs / RL_SENSOR)
 	// Resistencia del sensor Rs = RL_SENSOR * (4096 - raw_data) / raw_data
-	float rs = (float) RL_SENSOR * (4096 - raw_data) / raw_data;
+	float sensor_volt = (float) (raw_data * 3.3f)/4096.0f;
+	float rs = (float) (3.3f - sensor_volt)/sensor_volt;
 
 	// Relacion Rs/Ro
 	float rs_ro_ratio = rs / R0_SENSOR;
 
-	uint16_t concentracion_ppm = (uint16_t) 100.0f * pow(rs_ro_ratio, -1.52f);
+	float x = 1583.46 * rs_ro_ratio;
+	uint16_t concentracion_ppm = (uint16_t) pow(x, -1.709f);
 
 	// Asegurar un valor positivo
 	return (concentracion_ppm > 0) ? concentracion_ppm : 0;
@@ -321,14 +322,14 @@ void ADC_IRQHandler(void){
 		} else if(alarm_counter >= 7){
 			alarm_counter++;
 			// Estado CRITICO: LED Rojo + Buzzer
-			LPC_GPIO0 -> FIOCLR |= (LED_AMARILLO);
+			LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_AMARILLO);
 			LPC_GPIO0 -> FIOSET |= (LED_ROJO);
 			TIM_Cmd(LPC_TIM1, ENABLE); // Activar buzzer con PWM
 			NVIC_EnableIRQ(TIMER1_IRQn);
 		} else if(last_adc_value_ppm >= UMBRAL_PRECAUCION_PPM){
 			// Estado PRECAUCION: LED Amarillo
 			alarm_counter++; // Acumular lecturas de precaucion
-			LPC_GPIO0 -> FIOCLR |= (LED_ROJO | BUZZER);
+			LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_ROJO | BUZZER);
 			LPC_GPIO0 -> FIOSET |= (LED_AMARILLO);
 			TIM_Cmd(LPC_TIM1, DISABLE);
 			NVIC_DisableIRQ(TIMER1_IRQn);

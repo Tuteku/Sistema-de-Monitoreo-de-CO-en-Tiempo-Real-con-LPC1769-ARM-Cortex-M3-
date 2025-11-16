@@ -1,5 +1,9 @@
-int RL = 10;
+
+int R2 = 47000;
 float sensorValue = 0.0;
+float R0;
+
+
 void setup() {
   Serial.begin(9600);
 }
@@ -16,7 +20,7 @@ void loop() {
   sensorValue = sensorValue/100;
 
   sensor_volt = sensorValue/1024*5.0;
-  RS_air = RL * (5.0-sensor_volt)/sensor_volt;
+  RS_air = RL * (5.0-sensor_volt)/sensor_volt;S
   RO = RS_air/26.5;
 
   Serial.print("sensor_volt = ");
