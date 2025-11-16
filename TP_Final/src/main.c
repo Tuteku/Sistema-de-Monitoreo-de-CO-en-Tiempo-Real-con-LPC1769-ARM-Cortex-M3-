@@ -39,7 +39,6 @@ void cfgTimer(void);
 void cfgADC(void);
 void cfgUART(void);
 void cfgDMA(void);
-void cfgEXTI(void);
 
 uint16_t calc_average_ppm(void);
 uint16_t convert_adc_to_ppm(uint16_t raw_data);
@@ -59,10 +58,9 @@ int main(){
         for(volatile uint32_t j = 0; j < 1000000; j++); // Delay
     }
 
-	cfgUART();
-//    cfgEXTI();
-	cfgDMA();
     cfgADC();
+	cfgDMA();
+	cfgUART();
     cfgTimer();
 
 	while(1){};
@@ -133,6 +131,25 @@ void cfgTimer(void){
 
 	TIM_Init(LPC_TIM1, TIM_TIMER_MODE, &timerMode1);
 	TIM_ConfigMatch(LPC_TIM1, &timerMAT10);
+	NVIC_EnableIRQ(TIMER1_IRQn);
+
+	// --- Timer 2: Cambia el valor a transmitir entre la transmision en tiempo real y el promedio ---
+	TIM_TIMERCFG_Type timerMode2;
+	timerMode2.PrescaleOption = TIM_PRESCALE_USVAL;
+	timerMode2.PrescaleValue = 1000; //Base de tiempo de 1ms
+
+	TIM_MATCHCFG_Type timerMAT20;
+	timerMAT20.MatchChannel = 0;
+	timerMAT20.IntOnMatch = ENABLE;
+	timerMAT20.StopOnMatch = DISABLE;
+	timerMAT20.ResetOnMatch = ENABLE;
+	timerMAT20.ExtMatchOutputType = TIM_EXTMATCH_NOTHING; // Trigger para el ADC
+	timerMAT20.MatchValue = 10000 ; // Tiempo inicial 10 segundos
+
+	TIM_Init(LPC_TIM2, TIM_TIMER_MODE, &timerMode2);
+	TIM_ConfigMatch(LPC_TIM2, &timerMAT20);
+	NVIC_EnableIRQ(TIMER2_IRQn);
+	TIM_Cmd(LPC_TIM2, ENABLE);
 }
 
 void cfgADC(void){
@@ -169,8 +186,8 @@ void cfgDMA(void){
 	cfgADC_LLI0.DstAddr = (uint32_t)actual_adc_samples;
 	cfgADC_LLI0.NextLLI = (uint32_t)&cfgADC_LLI0;
 	cfgADC_LLI0.Control = (NUM_SAMPLES_ADC << 0) 	// Tamano de transferencia
-							| (1 << 18) 		// Ancho de palabra en fuente 16 bits
-							| (1 << 21) 		// Ancho de palabra en destino 16 bits
+							| (2 << 18) 		// Ancho de palabra en fuente 32 bits
+							| (2 << 21) 		// Ancho de palabra en destino 32 bits
 							& ~(1 << 26) 		// Sin incremento en fuente
 							| (1 << 27); 		// Incremento en destino
 
@@ -202,26 +219,6 @@ void cfgDMA(void){
 	GPDMA_ChannelCmd(7, DISABLE);
 }
 
-void cfgEXTI(void){
-	PINSEL_CFG_Type pin;
-	pin.Portnum = 2;
-	pin.Pinnum = 10;
-	pin.Funcnum = 1;
-	pin.Pinmode = PINSEL_PINMODE_PULLUP;
-	pin.OpenDrain = PINSEL_PINMODE_NORMAL;
-	PINSEL_ConfigPin(&pin);
-
-	EXTI_InitTypeDef cfgEINT0;
-
-	EXTI_Init();
-
-	cfgEINT0.EXTI_Line = EXTI_EINT0;
-	cfgEINT0.EXTI_Mode = EXTI_MODE_EDGE_SENSITIVE;
-	cfgEINT0.EXTI_polarity = EXTI_POLARITY_LOW_ACTIVE_OR_FALLING_EDGE;
-	EXTI_Config(&cfgEINT0);
-	NVIC_EnableIRQ(EINT0_IRQn);
-}
-
 uint16_t convert_adc_to_ppm(uint16_t raw_data){
 	// El valor raw es de 12 bits (0-4095)
 	if (raw_data == 0) return 0;
@@ -241,15 +238,16 @@ uint16_t convert_adc_to_ppm(uint16_t raw_data){
 }
 
 uint16_t calc_average_ppm(void){
-	uint32_t sum = 0;
+	uint16_t sum = 0;
 
 	// Iteracion sobre el banco de memoria
 	for(uint16_t inte = 0; inte < NUM_SAMPLES_ADC; inte++){
 		// Extraccion del valor del ADC de 12 bits de la palabra de 32 bits (bits 4-15)
-		sum += (*(last_samples + inte) >> 4) & 0x0FFF;
+		uint16_t aux = convert_adc_to_ppm((*(last_samples + inte) >> 4) & 0x0FFF);
+		sum += aux;
 	}
 	uint16_t samples_average = (uint16_t) sum / NUM_SAMPLES_ADC;
-	return convert_adc_to_ppm(samples_average);
+	return samples_average;
 }
 
 
@@ -273,21 +271,15 @@ void ADC_IRQHandler(void){
 			NVIC_DisableIRQ(TIMER1_IRQn);
 		} else if(alarm_counter >= 7){
 			alarm_counter++;
-			if(alarm_counter >= 50){
-				status_flag = 1;
-				NVIC_EnableIRQ(DMA_IRQn);
-				GPDMA_ChannelCmd(7, ENABLE);
-			}
 			// Estado CRITICO: LED Rojo + Buzzer
-
-			LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_AMARILLO);
+			LPC_GPIO0 -> FIOCLR |= (LED_AMARILLO);
 			LPC_GPIO0 -> FIOSET |= (LED_ROJO);
 			TIM_Cmd(LPC_TIM1, ENABLE); // Activar buzzer con PWM
 			NVIC_EnableIRQ(TIMER1_IRQn);
 		} else if(last_adc_value_ppm >= UMBRAL_PRECAUCION_PPM){
 			// Estado PRECAUCION: LED Amarillo
 			alarm_counter++; // Acumular lecturas de precaucion
-			LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_ROJO | BUZZER);
+			LPC_GPIO0 -> FIOCLR |= (LED_ROJO | BUZZER);
 			LPC_GPIO0 -> FIOSET |= (LED_AMARILLO);
 			TIM_Cmd(LPC_TIM1, DISABLE);
 			NVIC_DisableIRQ(TIMER1_IRQn);
@@ -315,25 +307,35 @@ void TIMER1_IRQHandler(void){
     }
 }
 
-void EINT0_IRQHandler(void){
-	if(status_flag){
-		status_flag = 0;
-		NVIC_DisableIRQ(DMA_IRQn);
-		GPDMA_ChannelCmd(7, DISABLE);
-		GPDMA_ChannelCmd(0, ENABLE);
-	}else{
-		status_flag = 1;
-		NVIC_EnableIRQ(DMA_IRQn);
-		GPDMA_ChannelCmd(0, DISABLE);
-		GPDMA_ChannelCmd(7, ENABLE);
-	}
-	LPC_SC->EXTINT |= (1<<0);
+void TIMER2_IRQHandler(void){
+    if(TIM_GetIntStatus(LPC_TIM2, TIM_MR0_INT)){
+//        TIM_ClearIntPending(LPC_TIM2, TIM_MR0_INT);
+        if(status_flag == 0){
+        	status_flag = 1;
+			TIM_UpdateMatchValue(LPC_TIM2, 0, 3000);
+			TIM_ResetCounter(LPC_TIM2);
+//        	GPDMA_ChannelCmd(0, DISABLE);
+//        	GPDMA_ChannelCmd(7, ENABLE);
+//        	NVIC_EnableIRQ(DMA_IRQn);
+			LPC_GPIO0 -> FIOSET |= (LED_VERDE);
+        } else{
+        	status_flag = 0;
+			TIM_UpdateMatchValue(LPC_TIM2, 0, 10000);
+			TIM_ResetCounter(LPC_TIM2);
+//        	GPDMA_ChannelCmd(7, DISABLE);
+//			GPDMA_ChannelCmd(0, ENABLE);
+//			NVIC_DisableIRQ(DMA_IRQn);
+			LPC_GPIO0 -> FIOCLR |= (LED_VERDE);
+        }
+        TIM_ClearIntPending(LPC_TIM2, TIM_MR0_INT);
+    }
 }
 
 void DMA_IRQHandler(void){
 	if(GPDMA_IntGetStatus(GPDMA_STAT_INTTC, 7)){
 		samples_average_ppm = calc_average_ppm();
 		GPDMA_ClearIntPending(GPDMA_STAT_INTTC, 7);
+		GPDMA_ChannelCmd(7, DISABLE);
 	}
 }
 
