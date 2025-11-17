@@ -18,8 +18,8 @@
 #define NUM_SAMPLES_ADC	10
 
 #define UMBRAL_PRECAUCION_PPM   25   	// Ajustar segun calibracion
-#define R0_SENSOR				1870  	// Resistencia en kOhm del sensor en aire limpio
-#define RL_SENSOR				1
+#define R0_SENSOR				72.41  	// Resistencia en kOhm del sensor en aire limpio
+#define RL_SENSOR				47
 #define MUESTRAS_PELIGROSAS_SEG	10
 
 #define TIEMPO_MUESTRA_PROMEDIO 3000
@@ -217,8 +217,8 @@ uint16_t convert_adc_to_ppm(uint16_t raw_data){
 	// Relacion Rs/Ro
 	float rs_ro_ratio = rs / R0_SENSOR;
 
-	float x = 100.0f * rs_ro_ratio;
-	uint16_t concentracion_ppm = (uint16_t) pow(x, -1.52f);
+//	float x = 100.0f * rs_ro_ratio;
+	uint16_t concentracion_ppm = (uint16_t) 100 * pow(rs_ro_ratio, -1.52f);
 
 	// Asegurar un valor positivo
 	return (concentracion_ppm > 0) ? concentracion_ppm : 0;
