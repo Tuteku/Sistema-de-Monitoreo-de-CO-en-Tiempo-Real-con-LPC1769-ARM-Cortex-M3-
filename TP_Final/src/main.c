@@ -17,11 +17,13 @@
 #define ADC_FREQ 		20000
 #define NUM_SAMPLES_ADC	10
 
-#define UMBRAL_PRECAUCION_PPM   5   	// Ajustar segun calibracion
-#define R0_SENSOR				1870  	// Resistencia en kOhm del sensor a 100ppm de CO en aire limpio
+#define UMBRAL_PRECAUCION_PPM   25   	// Ajustar segun calibracion
+#define R0_SENSOR				1870  	// Resistencia en kOhm del sensor en aire limpio
+#define RL_SENSOR				1
+#define MUESTRAS_PELIGROSAS_SEG	10
 
-#define BUFFER0_START	0x2007C000
-#define BUFFER1_START	(BUFFER0_START + (NUM_SAMPLES_ADC*sizeof(uint32_t)))
+#define TIEMPO_MUESTRA_PROMEDIO 3000
+#define TIEMPO_TRANSMISION_VIVO 10000
 
 volatile uint8_t 	flag_buzzer_toggle = 0;
 volatile uint8_t 	status_flag = 0;
@@ -144,7 +146,7 @@ void cfgTimer(void){
 	timerMAT20.StopOnMatch = ENABLE;
 	timerMAT20.ResetOnMatch = DISABLE;
 	timerMAT20.ExtMatchOutputType = TIM_EXTMATCH_NOTHING; // Trigger para el ADC
-	timerMAT20.MatchValue = 10000 ; // Tiempo inicial 10 segundos
+	timerMAT20.MatchValue = (uint32_t)TIEMPO_TRANSMISION_VIVO ; // Tiempo inicial 10 segundos
 
 	TIM_Init(LPC_TIM2, TIM_TIMER_MODE, &timerMode2);
 	TIM_ConfigMatch(LPC_TIM2, &timerMAT20);
@@ -207,16 +209,16 @@ uint16_t convert_adc_to_ppm(uint16_t raw_data){
 	if (raw_data == 0) return 0;
 
 	// Voltaje de salida del sensor Vs = (raw_data / 4096) * 3.3V
-	// Resistencia del sensor Rs = (3.3V - Vs) / (Vs / RL_SENSOR)
+	// Resistencia del sensor Rs = (3.3V - Vs) * RL / Vs
 	// Resistencia del sensor Rs = RL_SENSOR * (4096 - raw_data) / raw_data
-	float sensor_volt = (float) (raw_data * 3.3f)/4096.0f;
-	float rs = (float) (3.3f - sensor_volt)/sensor_volt;
+
+	float rs = (float) (4096.0f - raw_data) * RL_SENSOR /raw_data;
 
 	// Relacion Rs/Ro
 	float rs_ro_ratio = rs / R0_SENSOR;
 
-	float x = 1583.46 * rs_ro_ratio;
-	uint16_t concentracion_ppm = (uint16_t) pow(x, -1.709f);
+	float x = 100.0f * rs_ro_ratio;
+	uint16_t concentracion_ppm = (uint16_t) pow(x, -1.52f);
 
 	// Asegurar un valor positivo
 	return (concentracion_ppm > 0) ? concentracion_ppm : 0;
@@ -227,7 +229,6 @@ uint16_t calc_average_ppm(void){
 
 	// Iteracion sobre el banco de memoria
 	for(uint16_t inte = 0; inte < NUM_SAMPLES_ADC; inte++){
-		// Extraccion del valor del ADC de 12 bits de la palabra de 32 bits (bits 4-15)
 		uint16_t aux = convert_adc_to_ppm(last_samples_for_average[inte]);
 		sum += aux;
 	}
@@ -242,7 +243,7 @@ void UART_SendChar_Safe(char c) {
     LPC_UART2->THR = (uint8_t)c;
 }
 
-// Función manual para convertir uint16_t a string, ISR-Safe
+// Función manual para convertir uint16_t a string
 static char *uint16_to_string_manual(uint16_t num, char *buffer) {
     int i = 0;
     if (num == 0) {
@@ -303,8 +304,7 @@ void ADC_IRQHandler(void){
     if(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_0, ADC_DATA_DONE)){
 
     	// 1. CAPTURA Y ALMACENAMIENTO DE DATO
-    	// Leemos el dato, quitamos los 4 bits de status y lo guardamos en el buffer de 16 bits.
-    	actual_adc_samples[sample_idx] = (ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_0));// >> 4;
+    	actual_adc_samples[sample_idx] = (ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_0));
         // 2. CONVERSION y LÓGICA DE TIEMPO REAL
         last_adc_value_ppm = convert_adc_to_ppm(actual_adc_samples[sample_idx]);
 
@@ -319,7 +319,7 @@ void ADC_IRQHandler(void){
 			LPC_GPIO0 -> FIOCLR |= (LED_AMARILLO | LED_ROJO | BUZZER);
 	        TIM_Cmd(LPC_TIM1, DISABLE);
 			NVIC_DisableIRQ(TIMER1_IRQn);
-		} else if(alarm_counter >= 7){
+		} else if(alarm_counter >= MUESTRAS_PELIGROSAS_SEG){
 			alarm_counter++;
 			// Estado CRITICO: LED Rojo + Buzzer
 			LPC_GPIO0 -> FIOCLR |= (LED_VERDE | LED_AMARILLO);
@@ -362,14 +362,14 @@ void TIMER2_IRQHandler(void){
     if(TIM_GetIntStatus(LPC_TIM2, TIM_MR0_INT)){
         if(status_flag == 0){
         	status_flag = 1;
-			TIM_UpdateMatchValue(LPC_TIM2, 0, 3000);
+			TIM_UpdateMatchValue(LPC_TIM2, 0, (uint32_t)TIEMPO_MUESTRA_PROMEDIO);
 			TIM_ResetCounter(LPC_TIM2);
 			TIM_Cmd(LPC_TIM2, ENABLE);
 
 			DMA_SetupAndStart_CH7(); // Reinicia la transferencia de los datos
         } else{
         	status_flag = 0;
-			TIM_UpdateMatchValue(LPC_TIM2, 0, 10000);
+			TIM_UpdateMatchValue(LPC_TIM2, 0, (uint32_t)TIEMPO_TRANSMISION_VIVO);
 			TIM_ResetCounter(LPC_TIM2);
 			TIM_Cmd(LPC_TIM2, ENABLE);
         }

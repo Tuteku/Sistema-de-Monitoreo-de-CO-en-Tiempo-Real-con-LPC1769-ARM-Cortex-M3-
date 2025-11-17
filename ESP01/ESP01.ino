@@ -3,8 +3,10 @@
 
 // 1. Configuración de WiFi
 // ¡IMPORTANTE! Asegúrate de que estas credenciales sean correctas.
-const char* ssid = "FCEFyN 2.4GHz"; 	// <<--- TUS CREDENCIALES
-const char* password = ""; 	// <<--- TUS CREDENALES
+// const char* ssid = "FCEFyN 2.4GHz"; 	// <<--- TUS CREDENCIALES
+// const char* password = ""; 	// <<--- TUS CREDENALES
+const char* ssid = "2.4Personal-4839D"; 	// <<--- TUS CREDENCIALES
+const char* password = "mati200200"; 	// <<--- TUS CREDENALES
 
 // 2. Configuración Serial y Servidor
 #define BAUDRATE 9600
@@ -140,7 +142,7 @@ void handleRoot() {
 <!DOCTYPE html>
 <html>
 <head>
-	<title>Monitor CO Dinámico</title>
+	<title>Monitor CO Dinamico</title>
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<style>
 		body { font-family: 'Inter', sans-serif; text-align: center; margin: 0; padding: 20px; background-color: #f4f7f6; }
@@ -158,7 +160,7 @@ void handleRoot() {
 			border-radius: 9999px; 
 			color: white; 
 			margin-top: 10px;
-			transition: background-color 0.5s; /* Animación de color */
+			transition: background-color 0.5s; /* Animacion de color */
 		}
 		.status-safe { background-color: #10b981; } /* Green */
 		.status-caution { background-color: #f59e0b; } /* Yellow */
@@ -167,13 +169,13 @@ void handleRoot() {
 </head>
 <body>
 	<div class="container">
-		<h1>Monitor de Concentración de CO</h1>
-		<p class="sub-header">Datos en tiempo real desde LPC1769 vía UART/ESP-01.</p>
+		<h1>Monitor de Concentracion de CO</h1>
+		<p class="sub-header">Datos en tiempo real desde LPC1769 via UART/ESP-01.</p>
 		
 		<div class="data-display">
 			<div class="metric">
 				<p class="metric-value" id="latest_value">0</p>
-				<p class="metric-label">Muestra Última (ppm)</p>
+				<p class="metric-label">Muestra Ultima (ppm)</p>
 			</div>
 			<div class="metric">
 				<p class="metric-value" id="average_value">0</p>
@@ -187,7 +189,7 @@ void handleRoot() {
 		
 		<p class="sub-header">Historial de <span id="data_size_display">)=====");
 	html += String(DATA_SIZE); // Inyecta DATA_SIZE
-	html += F(R"=====(</span> muestras. Actualización cada )=====");
+	html += F(R"=====(</span> muestras. Actualizacion cada )=====");
 	html += String((float)REFRESH_INTERVAL_MS / 1000.0f, 2); // Inyecta el tiempo de refresco en segundos
 	html += F(R"=====(s.</p>
 		
@@ -203,9 +205,9 @@ void handleRoot() {
 	html += String(REFRESH_INTERVAL_MS); // Inyección clave del tiempo de refresco
 	html += F(R"=====(;
 
-		// Umbrales para la visualización (deben coincidir con tu lógica de PPM)
-		const UMBRAL_PRECAUCION = 2; 
-		const UMBRAL_CRITICO = 5; 
+		// Umbrales para la visualizacion (deben coincidir con tu lógica de PPM)
+		const UMBRAL_PRECAUCION = 25; 
+		const UMBRAL_CRITICO = 200; 
 		
 		let co_data = []; 
 		
@@ -334,10 +336,10 @@ void handleRoot() {
 
 			if (valueForAlarm > UMBRAL_CRITICO) {
 				statusElement.classList.add('status-critical');
-				statusElement.textContent = "¡PELIGRO CRÍTICO!";
+				statusElement.textContent = "PELIGRO CRiTICO";
 			} else if (valueForAlarm > UMBRAL_PRECAUCION) {
 				statusElement.classList.add('status-caution');
-				statusElement.textContent = "Precaución Alta";
+				statusElement.textContent = "Precaucion Alta";
 			} else {
 				statusElement.classList.add('status-safe');
 				statusElement.textContent = "Nivel Seguro";
